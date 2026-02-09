@@ -9,7 +9,10 @@ param(
   [string]$AgentPool,
 
   [Parameter(Mandatory=$true)]
-  [string]$AgentName
+  [string]$AgentName,
+
+  # Pin a known-good agent version (GitHub release asset)
+  [string]$AgentVersion = "4.269.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,59 +28,65 @@ function Assert-Admin {
   if (-not $isAdmin) { throw "Run as Administrator." }
 }
 
-function Get-LatestAgentZipUrl {
-  Ensure-Tls12
-  $headers = @{ "User-Agent" = "ado-agent-installer" }
-  $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/microsoft/azure-pipelines-agent/releases/latest" -Headers $headers
-  $asset = $rel.assets | Where-Object { $_.name -match "win-x64.*\.zip$" } | Select-Object -First 1
-  if (-not $asset) { throw "Could not find Windows x64 agent zip in latest release." }
-  return $asset.browser_download_url
-}
-
-Write-Host "=== Azure DevOps Agent Installation Started ==="
 Assert-Admin
 Ensure-Tls12
+
+Write-Host "=== Azure DevOps Agent Installation Started ==="
 
 $agentRoot = "C:\azagent"
 $zipPath   = Join-Path $env:TEMP "ado-agent.zip"
 
-New-Item -ItemType Directory -Force -Path $agentRoot | Out-Null
-Set-Location $agentRoot
+# Newer releases use pipelines-agent-*, older use vsts-agent-*
+$zipName1  = "pipelines-agent-win-x64-$AgentVersion.zip"
+$zipName2  = "vsts-agent-win-x64-$AgentVersion.zip"
 
-# If previously configured, try remove (best effort)
+$dl1 = "https://github.com/microsoft/azure-pipelines-agent/releases/download/v$AgentVersion/$zipName1"
+$dl2 = "https://github.com/microsoft/azure-pipelines-agent/releases/download/v$AgentVersion/$zipName2"
+
+New-Item -ItemType Directory -Force -Path $agentRoot | Out-Null
+
+# Best-effort remove if previously configured
 if (Test-Path (Join-Path $agentRoot "config.cmd")) {
   try {
-    Write-Host "Removing existing agent config (best effort)..."
+    Push-Location $agentRoot
     .\config.cmd remove --unattended --auth pat --token $PersonalAccessToken | Out-Null
-  } catch {}
+  } catch {} finally { Pop-Location }
 }
 
-# Clean folder contents (keep folder)
+# Clean folder contents
 Get-ChildItem -Path $agentRoot -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
-Write-Host "Getting latest agent download URL from GitHub releases..."
-$zipUrl = Get-LatestAgentZipUrl
-Write-Host "Downloading agent: $zipUrl"
-Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing -TimeoutSec 60
+Write-Host "Downloading agent v$AgentVersion from GitHub releases..."
+try {
+  Invoke-WebRequest -Uri $dl1 -OutFile $zipPath -UseBasicParsing -TimeoutSec 120
+} catch {
+  Write-Host "Primary download failed, trying fallback asset name..."
+  Invoke-WebRequest -Uri $dl2 -OutFile $zipPath -UseBasicParsing -TimeoutSec 120
+}
 
 Write-Host "Extracting agent..."
 Expand-Archive -Path $zipPath -DestinationPath $agentRoot -Force
 
-Write-Host "Configuring agent..."
-.\config.cmd --unattended `
-  --url $AzureDevOpsOrgUrl `
-  --auth pat `
-  --token $PersonalAccessToken `
-  --pool $AgentPool `
-  --agent $AgentName `
-  --runAsService `
-  --work "_work" `
-  --replace `
-  --acceptTeeEula
+Push-Location $agentRoot
+try {
+  Write-Host "Configuring agent..."
+  .\config.cmd --unattended `
+    --url $AzureDevOpsOrgUrl `
+    --auth pat `
+    --token $PersonalAccessToken `
+    --pool $AgentPool `
+    --agent $AgentName `
+    --runAsService `
+    --work "_work" `
+    --replace `
+    --acceptTeeEula
 
-Write-Host "Installing service..."
-.\svc.cmd install
-Write-Host "Starting service..."
-.\svc.cmd start
+  Write-Host "Installing service..."
+  .\svc.cmd install
+  Write-Host "Starting service..."
+  .\svc.cmd start
 
-Write-Host "=== Azure DevOps Agent Installed Successfully ==="
+  Write-Host "=== Azure DevOps Agent Installed Successfully ==="
+} finally {
+  Pop-Location
+}
