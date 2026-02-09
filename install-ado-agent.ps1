@@ -25,37 +25,44 @@ Write-Host "=== Azure DevOps Agent Installation Started ==="
 # TLS 1.2
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
 
-# Ensure folder
 New-Item -ItemType Directory -Force -Path $AgentRoot | Out-Null
 
-# Clean old install (best effort)
-if (Test-Path (Join-Path $AgentRoot "config.cmd")) {
-  try {
-    Push-Location $AgentRoot
-    .\config.cmd remove --unattended --auth pat --token $PersonalAccessToken | Out-Null
-  } catch {} finally { Pop-Location }
-}
+# Best-effort remove previous config (if any)
+try {
+  $existingConfig = Get-ChildItem -Path $AgentRoot -Recurse -Filter "config.cmd" -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($existingConfig) {
+    Push-Location $existingConfig.Directory.FullName
+    try { .\config.cmd remove --unattended --auth pat --token $PersonalAccessToken | Out-Null } catch {}
+    Pop-Location
+  }
+} catch {}
 
+# Clean contents
 Get-ChildItem -Path $AgentRoot -Force -ErrorAction SilentlyContinue |
   Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
-Write-Host "Downloading agent from: $DownloadUrl"
+Write-Host "Downloading agent: $DownloadUrl"
 Invoke-WebRequest -Uri $DownloadUrl -OutFile $ZipPath -UseBasicParsing -TimeoutSec 120
 
-Write-Host "Extracting agent to: $AgentRoot"
+Write-Host "Extracting to: $AgentRoot"
 Expand-Archive -Path $ZipPath -DestinationPath $AgentRoot -Force
 
-# Validate expected files
-$configCmd = Join-Path $AgentRoot "config.cmd"
-$svcCmd    = Join-Path $AgentRoot "svc.cmd"
+# Find config.cmd + svc.cmd anywhere under AgentRoot
+$configCmd = Get-ChildItem -Path $AgentRoot -Recurse -Filter "config.cmd" -ErrorAction SilentlyContinue | Select-Object -First 1
+$svcCmd    = Get-ChildItem -Path $AgentRoot -Recurse -Filter "svc.cmd"    -ErrorAction SilentlyContinue | Select-Object -First 1
 
-if (-not (Test-Path $configCmd)) { throw "config.cmd not found after extract. AgentRoot=$AgentRoot" }
-if (-not (Test-Path $svcCmd))    { throw "svc.cmd not found after extract. AgentRoot=$AgentRoot" }
+if (-not $configCmd) { throw "config.cmd not found after extract under $AgentRoot" }
+if (-not $svcCmd)    { throw "svc.cmd not found after extract under $AgentRoot" }
 
-Push-Location $AgentRoot
+Write-Host "Found config.cmd at: $($configCmd.FullName)"
+Write-Host "Found svc.cmd at   : $($svcCmd.FullName)"
+
+$workDir = $configCmd.Directory.FullName
+Push-Location $workDir
+
 try {
-  Write-Host "Configuring agent (pool=$AgentPool, name=$AgentName, org=$AzureDevOpsOrgUrl)..."
-  & $configCmd --unattended `
+  Write-Host "Configuring agent..."
+  & $configCmd.FullName --unattended `
     --url $AzureDevOpsOrgUrl `
     --auth pat `
     --token $PersonalAccessToken `
@@ -67,18 +74,19 @@ try {
     --acceptTeeEula
 
   if ($LASTEXITCODE -ne 0) {
-    throw "config.cmd failed with exit code $LASTEXITCODE. Most common: PAT not authorized / wrong scope."
+    throw "config.cmd failed with exit code $LASTEXITCODE"
   }
 
   Write-Host "Installing service..."
-  & $svcCmd install
+  & $svcCmd.FullName install
   if ($LASTEXITCODE -ne 0) { throw "svc.cmd install failed with exit code $LASTEXITCODE" }
 
   Write-Host "Starting service..."
-  & $svcCmd start
+  & $svcCmd.FullName start
   if ($LASTEXITCODE -ne 0) { throw "svc.cmd start failed with exit code $LASTEXITCODE" }
 
   Write-Host "=== Azure DevOps Agent Installed Successfully ==="
-} finally {
+}
+finally {
   Pop-Location
 }
