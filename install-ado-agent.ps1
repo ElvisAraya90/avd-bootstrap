@@ -9,69 +9,49 @@ param(
   [string]$AgentPool,
 
   [Parameter(Mandatory=$true)]
-  [string]$AgentName,
-
-  # Pin a known-good agent version (change later if you want)
-  [string]$AgentVersion = "4.269.0"
+  [string]$AgentName
 )
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
-function Ensure-Tls12 {
-  try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
-}
-
-function Assert-Admin {
-  $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
-  ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-  if (-not $isAdmin) { throw "Run as Administrator." }
-}
-
-Assert-Admin
-Ensure-Tls12
+# ==== CONFIG ====
+$AgentVersion = "4.269.0"
+$DownloadUrl  = "https://download.agent.dev.azure.com/agent/4.269.0/pipelines-agent-win-x64-4.269.0.zip"
+$AgentRoot    = "C:\azagent"
+$ZipPath      = Join-Path $env:TEMP "ado-agent.zip"
+# ===============
 
 Write-Host "=== Azure DevOps Agent Installation Started ==="
 
-$agentRoot = "C:\azagent"
-$zipPath   = Join-Path $env:TEMP "ado-agent.zip"
-$zipName   = "pipelines-agent-win-x64-$AgentVersion.zip"
+# Force TLS 1.2
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-# Microsoft official new CDN (recommended)
-$dlPrimary = "https://download.agent.dev.azure.com/agent/$AgentVersion/$zipName"
+# Create directory
+New-Item -ItemType Directory -Force -Path $AgentRoot | Out-Null
 
-# Legacy CDN (fallback)
-$dlFallback = "https://vstsagentpackage.azureedge.net/agent/$AgentVersion/vsts-agent-win-x64-$AgentVersion.zip"
-
-New-Item -ItemType Directory -Force -Path $agentRoot | Out-Null
-
-# Best-effort remove if previously configured
-if (Test-Path (Join-Path $agentRoot "config.cmd")) {
-  try {
-    Push-Location $agentRoot
-    .\config.cmd remove --unattended --auth pat --token $PersonalAccessToken | Out-Null
-  } catch {} finally { Pop-Location }
+# Clean existing install (if any)
+if (Test-Path (Join-Path $AgentRoot "config.cmd")) {
+    Push-Location $AgentRoot
+    try {
+        .\config.cmd remove --unattended --auth pat --token $PersonalAccessToken | Out-Null
+    } catch {}
+    Pop-Location
 }
 
-# Clean folder contents
-Get-ChildItem -Path $agentRoot -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+Get-ChildItem -Path $AgentRoot -Force -ErrorAction SilentlyContinue | 
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
-Write-Host "Downloading agent v$AgentVersion..."
-try {
-  Write-Host "Primary: $dlPrimary"
-  Invoke-WebRequest -Uri $dlPrimary -OutFile $zipPath -UseBasicParsing -TimeoutSec 120
-} catch {
-  Write-Host "Primary failed. Trying fallback: $dlFallback"
-  Invoke-WebRequest -Uri $dlFallback -OutFile $zipPath -UseBasicParsing -TimeoutSec 120
-}
+Write-Host "Downloading agent..."
+Invoke-WebRequest -Uri $DownloadUrl -OutFile $ZipPath -UseBasicParsing
 
 Write-Host "Extracting agent..."
-Expand-Archive -Path $zipPath -DestinationPath $agentRoot -Force
+Expand-Archive -Path $ZipPath -DestinationPath $AgentRoot -Force
 
-Push-Location $agentRoot
-try {
-  Write-Host "Configuring agent..."
-  .\config.cmd --unattended `
+Push-Location $AgentRoot
+
+Write-Host "Configuring agent..."
+.\config.cmd --unattended `
     --url $AzureDevOpsOrgUrl `
     --auth pat `
     --token $PersonalAccessToken `
@@ -82,12 +62,12 @@ try {
     --replace `
     --acceptTeeEula
 
-  Write-Host "Installing service..."
-  .\svc.cmd install
-  Write-Host "Starting service..."
-  .\svc.cmd start
+Write-Host "Installing service..."
+.\svc.cmd install
 
-  Write-Host "=== Azure DevOps Agent Installed Successfully ==="
-} finally {
-  Pop-Location
-}
+Write-Host "Starting service..."
+.\svc.cmd start
+
+Pop-Location
+
+Write-Host "=== Azure DevOps Agent Installed Successfully ==="
