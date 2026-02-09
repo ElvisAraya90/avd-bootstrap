@@ -11,7 +11,7 @@ param(
   [Parameter(Mandatory=$true)]
   [string]$AgentName,
 
-  # Pin a known-good agent version (GitHub release asset)
+  # Pin a known-good agent version (change later if you want)
   [string]$AgentVersion = "4.269.0"
 )
 
@@ -35,13 +35,13 @@ Write-Host "=== Azure DevOps Agent Installation Started ==="
 
 $agentRoot = "C:\azagent"
 $zipPath   = Join-Path $env:TEMP "ado-agent.zip"
+$zipName   = "pipelines-agent-win-x64-$AgentVersion.zip"
 
-# Newer releases use pipelines-agent-*, older use vsts-agent-*
-$zipName1  = "pipelines-agent-win-x64-$AgentVersion.zip"
-$zipName2  = "vsts-agent-win-x64-$AgentVersion.zip"
+# Microsoft official new CDN (recommended)
+$dlPrimary = "https://download.agent.dev.azure.com/agent/$AgentVersion/$zipName"
 
-$dl1 = "https://github.com/microsoft/azure-pipelines-agent/releases/download/v$AgentVersion/$zipName1"
-$dl2 = "https://github.com/microsoft/azure-pipelines-agent/releases/download/v$AgentVersion/$zipName2"
+# Legacy CDN (fallback)
+$dlFallback = "https://vstsagentpackage.azureedge.net/agent/$AgentVersion/vsts-agent-win-x64-$AgentVersion.zip"
 
 New-Item -ItemType Directory -Force -Path $agentRoot | Out-Null
 
@@ -56,12 +56,13 @@ if (Test-Path (Join-Path $agentRoot "config.cmd")) {
 # Clean folder contents
 Get-ChildItem -Path $agentRoot -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
-Write-Host "Downloading agent v$AgentVersion from GitHub releases..."
+Write-Host "Downloading agent v$AgentVersion..."
 try {
-  Invoke-WebRequest -Uri $dl1 -OutFile $zipPath -UseBasicParsing -TimeoutSec 120
+  Write-Host "Primary: $dlPrimary"
+  Invoke-WebRequest -Uri $dlPrimary -OutFile $zipPath -UseBasicParsing -TimeoutSec 120
 } catch {
-  Write-Host "Primary download failed, trying fallback asset name..."
-  Invoke-WebRequest -Uri $dl2 -OutFile $zipPath -UseBasicParsing -TimeoutSec 120
+  Write-Host "Primary failed. Trying fallback: $dlFallback"
+  Invoke-WebRequest -Uri $dlFallback -OutFile $zipPath -UseBasicParsing -TimeoutSec 120
 }
 
 Write-Host "Extracting agent..."
