@@ -15,10 +15,13 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
+# ==== CONFIG ====
 $AgentVersion = "4.269.0"
-$DownloadUrl  = "https://download.agent.dev.azure.com/agent/4.269.0/pipelines-agent-win-x64-4.269.0.zip"
+$ZipName      = "vsts-agent-win-x64-$AgentVersion.zip"
+$DownloadUrl  = "https://download.agent.dev.azure.com/agent/$AgentVersion/$ZipName"
 $AgentRoot    = "C:\azagent"
-$ZipPath      = Join-Path $env:TEMP "ado-agent.zip"
+$ZipPath      = Join-Path $env:TEMP $ZipName
+# ===============
 
 Write-Host "=== Azure DevOps Agent Installation Started ==="
 
@@ -42,24 +45,23 @@ Get-ChildItem -Path $AgentRoot -Force -ErrorAction SilentlyContinue |
   Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host "Downloading agent: $DownloadUrl"
-Invoke-WebRequest -Uri $DownloadUrl -OutFile $ZipPath -UseBasicParsing -TimeoutSec 120
+Invoke-WebRequest -Uri $DownloadUrl -OutFile $ZipPath -UseBasicParsing -TimeoutSec 180
 
 Write-Host "Extracting to: $AgentRoot"
 Expand-Archive -Path $ZipPath -DestinationPath $AgentRoot -Force
 
-# Find config.cmd + svc.cmd anywhere under AgentRoot
+# Find config.cmd + svc.cmd anywhere under AgentRoot (robust)
 $configCmd = Get-ChildItem -Path $AgentRoot -Recurse -Filter "config.cmd" -ErrorAction SilentlyContinue | Select-Object -First 1
 $svcCmd    = Get-ChildItem -Path $AgentRoot -Recurse -Filter "svc.cmd"    -ErrorAction SilentlyContinue | Select-Object -First 1
 
 if (-not $configCmd) { throw "config.cmd not found after extract under $AgentRoot" }
-if (-not $svcCmd)    { throw "svc.cmd not found after extract under $AgentRoot" }
+if (-not $svcCmd)    { throw "svc.cmd not found after extract under $AgentRoot (wrong ZIP package?)" }
 
-Write-Host "Found config.cmd at: $($configCmd.FullName)"
-Write-Host "Found svc.cmd at   : $($svcCmd.FullName)"
+Write-Host "Found config.cmd: $($configCmd.FullName)"
+Write-Host "Found svc.cmd   : $($svcCmd.FullName)"
 
 $workDir = $configCmd.Directory.FullName
 Push-Location $workDir
-
 try {
   Write-Host "Configuring agent..."
   & $configCmd.FullName --unattended `
@@ -73,9 +75,7 @@ try {
     --replace `
     --acceptTeeEula
 
-  if ($LASTEXITCODE -ne 0) {
-    throw "config.cmd failed with exit code $LASTEXITCODE"
-  }
+  if ($LASTEXITCODE -ne 0) { throw "config.cmd failed with exit code $LASTEXITCODE" }
 
   Write-Host "Installing service..."
   & $svcCmd.FullName install
